@@ -1,0 +1,11 @@
+# Arduino / build artifacts
+**/build/
+**/.pio/
+**/.vscode/
+**/*.bin
+**/*.elf
+**/*.map
+
+# mac/windows junk
+.DS_Store
+Thumbs.db
