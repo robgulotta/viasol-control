@@ -84,6 +84,7 @@ struct Action {
 // -----------------------------------------------------------------------------
 struct Rule {
   uint32_t id = 0;
+  int16_t priority = 0;   // higher = wins conflicts, UI sorting
   bool enabled = true;
   String name;
 

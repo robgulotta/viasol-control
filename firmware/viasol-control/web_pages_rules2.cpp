@@ -2,6 +2,8 @@
 #include "web_pages_rules2_groups.h"
 #include "rules2.h"
 #include "io_catalog.h"
+#include <vector>
+#include <algorithm>
 
 // Simple helper: <select> from a key list
 static String htmlSelectKeys(const char* name, const char* keys[], int n, const String& cur) {
@@ -53,21 +55,44 @@ String buildRules2HomeHtml(Settings& cfg) {
   h += "<table border='1' cellpadding='6' cellspacing='0'>";
   h += "<tr><th>ID</th><th>Name</th><th>Enabled</th><th>Expr</th><th>minEval</th><th>cooldown</th></tr>";
 
-  for (auto const& r : rules2::db.rules) {
-    h += "<tr>";
-    h += "<td>" + String(r.id) + "</td>";
-    h += "<td><a href='/config/rules2/edit?id=" + String(r.id) + "'>" + r.name + "</a></td>";
-    h += "<td>" + String(r.enabled ? "yes" : "no") + "</td>";
-    h += "<td>" + rules2::describeExpr(r.exprRootId) + "</td>";
-    h += "<td>" + String(r.minEvalPeriodMs) + "ms</td>";
-    h += "<td>" + String(r.cooldownMs) + "ms</td>";
-    h += "</tr>";
-  }
+    // Build sorted render order (do NOT reorder storage)
+    std::vector<size_t> order;
+    order.reserve(rules2::db.rules.size());
 
-  h += "</table>";
-  h += "<p><a href='/config'>Back</a></p>";
-  return h;
-}
+    for (size_t i = 0; i < rules2::db.rules.size(); ++i) {
+      order.push_back(i);
+    }
+
+    std::sort(order.begin(), order.end(),
+      [](size_t a, size_t b) {
+        const auto& ra = rules2::db.rules[a];
+        const auto& rb = rules2::db.rules[b];
+
+        if (ra.priority != rb.priority)
+          return ra.priority > rb.priority;  // higher priority first
+
+        return ra.id < rb.id; // stable tie-breaker
+      });
+
+    // Render rows in priority order
+    for (size_t idx : order) {
+      const auto& r = rules2::db.rules[idx];
+
+      h += "<tr>";
+      h += "<td>" + String(r.id) + "</td>";
+      h += "<td><a href='/config/rules2/edit?id=" + String(r.id) + "'>" + r.name + "</a></td>";
+      h += "<td>" + String(r.enabled ? "yes" : "no") + "</td>";
+      h += "<td>" + rules2::describeExpr(r.exprRootId) + "</td>";
+      h += "<td>" + String(r.minEvalPeriodMs) + "ms</td>";
+      h += "<td>" + String(r.cooldownMs) + "ms</td>";
+      h += "</tr>";
+    }
+
+
+    h += "</table>";
+    h += "<p><a href='/config'>Back</a></p>";
+    return h;
+  }
 
 String buildRules2ConditionsHtml(Settings& cfg) {
   (void)cfg;
