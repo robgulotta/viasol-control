@@ -12,13 +12,22 @@
 #include <LittleFS.h>
 
 static void handleLogo() {
+
+  uint32_t t0 = millis();
+  Serial.println("[http] logo start");
+
   File f = LittleFS.open("/logo.png", "r");
   if (!f) {
     app.server.send(404, "text/plain", "Missing /logo.png in LittleFS");
     return;
   }
+  app.server.sendHeader("Cache-Control", "public, max-age=86400");
+  app.server.sendHeader("Connection", "close");
   app.server.streamFile(f, "image/png");
   f.close();
+
+  Serial.printf("[http] logo done in %u ms\n", (unsigned)(millis() - t0));
+
 }
 
 static int argInt(const char* name, int cur) {
@@ -101,11 +110,19 @@ static void handleRules2DeleteRule() {
 }
 
 static void handleRules2SaveRule() {
+  Serial.println("[rules2] save: begin");
   rules2::uiSaveRuleFromPost(app.server);
+  Serial.println("[rules2] save: after uiSaveRuleFromPost");
+
   rules2::saveRules2();
+  Serial.println("[rules2] save: after saveRules2");
+
+  app.server.sendHeader("Connection", "close");
   app.server.sendHeader("Location", "/config/rules2");
-  app.server.send(303);
+  app.server.send(303, "text/plain", "");
+  Serial.println("[rules2] save: response sent");
 }
+
 
 static void handleRules2NewCondition() {
   uint32_t cid = rules2::uiCreateDefaultCondition();

@@ -31,9 +31,27 @@ static String opToStr2(rules2::CmpOp op) {
   return "GT";
 }
 
+static void pageBegin(String& h, const char* title) {
+  h += "<!doctype html><html lang='en'><head>";
+  h += "<meta charset='utf-8'>";
+  h += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  h += "<title>";
+  h += title;
+  h += "</title>";
+  h += "</head><body>";
+}
+
+static void pageEnd(String& h) {
+  h += "</body></html>";
+}
+
+
+
 String buildRules2HomeHtml(Settings& cfg) {
   (void)cfg;
   String h;
+
+  h.reserve(9000);
 
   h += "<h2>Rules v2 (Parallel)</h2>";
   h += "<p>Separate from Rules v1. Currently in-memory only (persistence stubs).</p>";
@@ -53,7 +71,7 @@ String buildRules2HomeHtml(Settings& cfg) {
 
   h += "<h3>Rules</h3>";
   h += "<table border='1' cellpadding='6' cellspacing='0'>";
-  h += "<tr><th>ID</th><th>Name</th><th>Enabled</th><th>Expr</th><th>minEval</th><th>cooldown</th></tr>";
+  h += "<tr><th>ID</th><th>Name</th><th>Enabled</th><th>Pri</th><th>Expr</th><th>minEval</th><th>cooldown</th></tr>";
 
     // Build sorted render order (do NOT reorder storage)
     std::vector<size_t> order;
@@ -69,7 +87,7 @@ String buildRules2HomeHtml(Settings& cfg) {
         const auto& rb = rules2::db.rules[b];
 
         if (ra.priority != rb.priority)
-          return ra.priority > rb.priority;  // higher priority first
+          return ra.priority < rb.priority;  // higher priority first
 
         return ra.id < rb.id; // stable tie-breaker
       });
@@ -82,6 +100,7 @@ String buildRules2HomeHtml(Settings& cfg) {
       h += "<td>" + String(r.id) + "</td>";
       h += "<td><a href='/config/rules2/edit?id=" + String(r.id) + "'>" + r.name + "</a></td>";
       h += "<td>" + String(r.enabled ? "yes" : "no") + "</td>";
+      h += "<td>" + String(r.priority) + "</td>";
       h += "<td>" + rules2::describeExpr(r.exprRootId) + "</td>";
       h += "<td>" + String(r.minEvalPeriodMs) + "ms</td>";
       h += "<td>" + String(r.cooldownMs) + "ms</td>";
@@ -97,6 +116,9 @@ String buildRules2HomeHtml(Settings& cfg) {
 String buildRules2ConditionsHtml(Settings& cfg) {
   (void)cfg;
   String h;
+
+  h.reserve(9000);
+  pageBegin(h, "Rules v2 Conditions");
 
   h += "<h2>Rules v2 Conditions</h2>";
 
@@ -163,7 +185,8 @@ String buildRules2ConditionsHtml(Settings& cfg) {
   h += "</table>";
   h += "<button type='submit'>Save Conditions</button>";
   h += "</form>";
-
+  
+  pageEnd(h);
   return h;
 }
 
@@ -173,6 +196,10 @@ String buildRules2EditRuleHtml(Settings& cfg, uint32_t ruleId) {
   if (!r) return "<p>Rule not found</p><p><a href='/config/rules2'>Back</a></p>";
 
   String h;
+  h.reserve(9000);
+  pageBegin(h, "Rules v2 Edit Rules");
+
+
   h += "<h2>Edit Rule v2</h2>";
 
   h += "<form method='POST' action='/config/rules2/save'>";
@@ -183,6 +210,10 @@ String buildRules2EditRuleHtml(Settings& cfg, uint32_t ruleId) {
   h += "<p><label><input type='checkbox' name='en'";
   if (r->enabled) h += " checked";
   h += "> enabled</label></p>";
+
+  h += "<p><label>Priority</label><br>";
+  h += "<input type='number' name='priority' value='" + String(r->priority) + "' step='1'></p>";
+
 
   h += "<p>minEvalPeriodMs: <input name='minEval' value='" + String(r->minEvalPeriodMs) + "'></p>";
   h += "<p>cooldownMs: <input name='cooldown' value='" + String(r->cooldownMs) + "'></p>";
@@ -255,5 +286,6 @@ String buildRules2EditRuleHtml(Settings& cfg, uint32_t ruleId) {
   h += "</form>";
 
   h += "<p><a href='/config/rules2'>Back</a></p>";
+  pageEnd(h);
   return h;
 }

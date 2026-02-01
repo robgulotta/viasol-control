@@ -7,7 +7,15 @@
 static const int LED_PIN = LED_BUILTIN;
 
 const char* INPUT_KEYS[] = {
-  "tank_temp_c", "pv_v", "pv_a", "main_a",
+  "tank_temp_c", 
+  "floor_temp_c", 
+  "indoor_temp_c",
+  "tank_setpoint_c",
+  "indoor_setpoint_c",
+  "soc",
+  "pv_v", 
+  "pv_a", 
+  "main_a",
   "mqtt1", "mqtt2", "mqtt3", "mqtt4"
 };
 const int N_INPUTS = sizeof(INPUT_KEYS) / sizeof(INPUT_KEYS[0]);

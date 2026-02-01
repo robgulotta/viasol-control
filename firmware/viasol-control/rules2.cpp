@@ -1,5 +1,7 @@
 #include "rules2.h"
 #include "io_catalog.h"
+#include <LittleFS.h>
+#include <ArduinoJson.h>
 
 namespace rules2 {
 
@@ -7,6 +9,11 @@ namespace rules2 {
 // Global DB
 // -----------------------------------------------------------------------------
 Db db;
+
+
+static const char* RULES2_PATH = "/rules2.json";
+static const uint16_t RULES2_SCHEMA = 1;
+
 
 // -----------------------------------------------------------------------------
 // Internal helpers
@@ -287,8 +294,12 @@ void uiSaveRuleFromPost(WebServer& s) {
   if (s.hasArg("name")) r->name = s.arg("name");
   r->enabled = s.hasArg("en");
 
+
+
   if (s.hasArg("minEval")) r->minEvalPeriodMs = (uint32_t)s.arg("minEval").toInt();
   if (s.hasArg("cooldown")) r->cooldownMs = (uint32_t)s.arg("cooldown").toInt();
+  if (s.hasArg("priority")) r->priority = (int16_t)s.arg("priority").toInt();
+
 
   // 1) Preferred: choose an existing expression/group as the root
   if (s.hasArg("rootExpr")) {
@@ -512,13 +523,261 @@ String describeExpr(uint32_t exprId) {
 // -----------------------------------------------------------------------------
 // Persistence stubs
 // -----------------------------------------------------------------------------
-void loadRules2() {
-  // TODO: load from Preferences
+void saveRules2() {
+  // Bump this if you add more fields or have lots of rules/expr/conds.
+  // ESP32-S3 should handle 48KB fine.
+  DynamicJsonDocument doc(49152);
+
+  doc["schema"] = RULES2_SCHEMA;
+  doc["nextId"] = db.nextId;
+
+  // ---------------------------------------------------------------------------
+  // Conditions
+  // ---------------------------------------------------------------------------
+  JsonArray conds = doc.createNestedArray("conditions");
+  for (const auto& c : db.conditions) {
+    JsonObject o = conds.createNestedObject();
+    o["id"] = c.id;
+    o["enabled"] = c.enabled;
+    o["name"] = c.name;
+
+    o["type"] = (uint8_t)c.type;
+    o["inputKey"] = c.inputKey;
+    o["op"] = (uint8_t)c.op;
+
+    o["threshold"] = c.threshold;
+    o["rhsInputKey"] = c.rhsInputKey;
+
+    o["stableForMs"] = c.stableForMs;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Expr nodes (groups / tree)
+  // ---------------------------------------------------------------------------
+  JsonArray expr = doc.createNestedArray("expr");
+  for (const auto& e : db.expr) {
+    JsonObject o = expr.createNestedObject();
+    o["id"] = e.id;
+    o["type"] = (uint8_t)e.type;
+    o["name"] = e.name;
+
+    o["condId"] = e.condId;
+    o["child"] = e.child;
+
+    JsonArray kids = o.createNestedArray("children");
+    for (uint32_t cid : e.children) kids.add(cid);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rules + actions
+  // ---------------------------------------------------------------------------
+  JsonArray rules = doc.createNestedArray("rules");
+  for (const auto& r : db.rules) {
+    JsonObject o = rules.createNestedObject();
+    o["id"] = r.id;
+    o["priority"] = r.priority;   // lower = higher priority (0 is top)
+    o["enabled"] = r.enabled;
+    o["name"] = r.name;
+
+    o["exprRootId"] = r.exprRootId;
+    o["minEvalPeriodMs"] = r.minEvalPeriodMs;
+    o["cooldownMs"] = r.cooldownMs;
+
+    JsonArray acts = o.createNestedArray("actions");
+    for (const auto& a : r.actions) {
+      JsonObject ao = acts.createNestedObject();
+      ao["type"] = (uint8_t)a.type;
+      ao["outputKey"] = a.outputKey;
+      ao["on"] = a.on;
+      ao["durationMs"] = a.durationMs;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Write file
+  // ---------------------------------------------------------------------------
+  File f = LittleFS.open(RULES2_PATH, "w");
+  if (!f) {
+    Serial.println("[rules2] saveRules2: failed to open file for write");
+    return;
+  }
+
+  size_t n = serializeJson(doc, f);
+  f.close();
+
+  Serial.printf("[rules2] saveRules2: wrote %u bytes, rules=%u, expr=%u, cond=%u\n",
+                (unsigned)n,
+                (unsigned)db.rules.size(),
+                (unsigned)db.expr.size(),
+                (unsigned)db.conditions.size());
+
+  if (doc.overflowed()) {
+    Serial.println("[rules2] saveRules2: WARNING doc overflowed (increase capacity)");
+  }
 }
 
-void saveRules2() {
-  // TODO: save to Preferences
+void loadRules2() {
+  if (!LittleFS.exists(RULES2_PATH)) {
+    Serial.println("[rules2] loadRules2: no file, starting empty");
+    return;
+  }
+
+  File f = LittleFS.open(RULES2_PATH, "r");
+  if (!f) {
+    Serial.println("[rules2] loadRules2: failed to open file");
+    return;
+  }
+
+  DynamicJsonDocument doc(49152);
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+
+  if (err) {
+    Serial.printf("[rules2] loadRules2: JSON parse error: %s\n", err.c_str());
+    return;
+  }
+
+  uint16_t schema = (uint16_t)(doc["schema"] | 0);
+  if (schema != RULES2_SCHEMA) {
+    Serial.printf("[rules2] loadRules2: schema mismatch %u (expected %u)\n",
+                  (unsigned)schema, (unsigned)RULES2_SCHEMA);
+    return;
+  }
+
+  // Clear DB first
+  db.conditions.clear();
+  db.expr.clear();
+  db.rules.clear();
+
+  db.nextId = (uint32_t)(doc["nextId"] | 1);
+
+  // ---------------------------------------------------------------------------
+  // Conditions
+  // ---------------------------------------------------------------------------
+  JsonArray conds = doc["conditions"].as<JsonArray>();
+  if (!conds.isNull()) {
+    for (JsonObject o : conds) {
+      Condition c;
+      c.id = (uint32_t)(o["id"] | 0);
+      c.enabled = (bool)(o["enabled"] | true);
+      c.name = String((const char*)(o["name"] | ""));
+
+      c.type = (CondType)(uint8_t)(o["type"] | (uint8_t)CondType::CompareInputToConst);
+      c.inputKey = String((const char*)(o["inputKey"] | ""));
+      c.op = (CmpOp)(uint8_t)(o["op"] | (uint8_t)CmpOp::GT);
+
+      c.threshold = (float)(o["threshold"] | 0.0);
+      c.rhsInputKey = String((const char*)(o["rhsInputKey"] | ""));
+
+      c.stableForMs = (uint32_t)(o["stableForMs"] | 0);
+
+      // Reset runtime
+      c.lastEval = false;
+      c.lastFlipMs = 0;
+
+      db.conditions.push_back(c);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Expr nodes
+  // ---------------------------------------------------------------------------
+  JsonArray expr = doc["expr"].as<JsonArray>();
+  if (!expr.isNull()) {
+    for (JsonObject o : expr) {
+      ExprNode e;
+      e.id = (uint32_t)(o["id"] | 0);
+      e.type = (ExprType)(uint8_t)(o["type"] | (uint8_t)ExprType::LeafCond);
+      e.name = String((const char*)(o["name"] | ""));
+
+      e.condId = (uint32_t)(o["condId"] | 0);
+      e.child = (uint32_t)(o["child"] | 0);
+
+      e.children.clear();
+      JsonArray kids = o["children"].as<JsonArray>();
+      if (!kids.isNull()) {
+        for (JsonVariant v : kids) e.children.push_back((uint32_t)(v | 0));
+      }
+
+      db.expr.push_back(e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rules + actions
+  // ---------------------------------------------------------------------------
+  JsonArray rules = doc["rules"].as<JsonArray>();
+  if (!rules.isNull()) {
+    for (JsonObject o : rules) {
+      Rule r;
+      r.id = (uint32_t)(o["id"] | 0);
+      r.priority = (int16_t)(o["priority"] | 0);
+      r.enabled = (bool)(o["enabled"] | true);
+      r.name = String((const char*)(o["name"] | ""));
+
+      r.exprRootId = (uint32_t)(o["exprRootId"] | 0);
+      r.minEvalPeriodMs = (uint32_t)(o["minEvalPeriodMs"] | 250);
+      r.cooldownMs = (uint32_t)(o["cooldownMs"] | 0);
+
+      r.actions.clear();
+      JsonArray acts = o["actions"].as<JsonArray>();
+      if (!acts.isNull()) {
+        for (JsonObject ao : acts) {
+          Action a;
+          a.type = (ActionType)(uint8_t)(ao["type"] | (uint8_t)ActionType::SetOutput);
+          a.outputKey = String((const char*)(ao["outputKey"] | ""));
+          a.on = (bool)(ao["on"] | true);
+          a.durationMs = (uint32_t)(ao["durationMs"] | 0);
+          r.actions.push_back(a);
+        }
+      }
+
+      // Reset runtime
+      r.lastEvalMs = 0;
+      r.lastTriggerMs = 0;
+      r.lastResult = false;
+
+      db.rules.push_back(r);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recompute nextId safely (prevents duplicate IDs)
+  // ---------------------------------------------------------------------------
+  uint32_t maxId = 0;
+  for (const auto& c : db.conditions) if (c.id > maxId) maxId = c.id;
+  for (const auto& e : db.expr)       if (e.id > maxId) maxId = e.id;
+  for (const auto& r : db.rules)      if (r.id > maxId) maxId = r.id;
+  if (db.nextId <= maxId) db.nextId = maxId + 1;
+
+  // ---------------------------------------------------------------------------
+  // Optional sanity warnings
+  // ---------------------------------------------------------------------------
+  for (const auto& r : db.rules) {
+    if (r.exprRootId && !db.findExpr(r.exprRootId)) {
+      Serial.printf("[rules2] WARN: rule %u root expr %u missing\n",
+                    (unsigned)r.id, (unsigned)r.exprRootId);
+    }
+  }
+  for (const auto& e : db.expr) {
+    if (e.type == ExprType::LeafCond && e.condId && !db.findCond(e.condId)) {
+      Serial.printf("[rules2] WARN: expr %u leaf cond %u missing\n",
+                    (unsigned)e.id, (unsigned)e.condId);
+    }
+  }
+
+  Serial.printf("[rules2] loadRules2: rules=%u, expr=%u, cond=%u, nextId=%u\n",
+                (unsigned)db.rules.size(),
+                (unsigned)db.expr.size(),
+                (unsigned)db.conditions.size(),
+                (unsigned)db.nextId);
+
+  if (doc.overflowed()) {
+    Serial.println("[rules2] loadRules2: WARNING doc overflowed (increase capacity)");
+  }
 }
+
+
 
 // -----------------------------------------------------------------------------
 // Demo bootstrap
